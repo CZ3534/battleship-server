@@ -55,12 +55,34 @@ wss.on('connection', ws => {
         const code = (msg.code || '').toUpperCase();
         const room = rooms[code];
         if (!room) { send(ws, { type: 'error', message: 'Room not found' }); return; }
-        if (room.players.length >= 2) { send(ws, { type: 'error', message: 'Room is full' }); return; }
+        if (room.players.length >= 2 && room.players.every(p => p !== null)) {
+          send(ws, { type: 'error', message: 'Room is full' }); return;
+        }
         room.players.push(ws);
         ws.roomCode = code;
         ws.playerIndex = 1;
         send(ws, { type: 'joined', code, playerIndex: 1, settings: room.settings });
         send(room.players[0], { type: 'opponent_joined' });
+        break;
+      }
+
+      case 'rejoin': {
+        const code = (msg.code || '').toUpperCase();
+        const pidx = msg.playerIndex;
+        const room = rooms[code];
+        if (!room) { send(ws, { type: 'error', message: 'Room expired' }); return; }
+        if (room.players[pidx] !== null) { send(ws, { type: 'error', message: 'Slot taken' }); return; }
+        // Clear grace period timeout
+        if (room.disconnected && room.disconnected[pidx]) {
+          clearTimeout(room.disconnected[pidx].timeout);
+          delete room.disconnected[pidx];
+        }
+        // Restore player in slot
+        room.players[pidx] = ws;
+        ws.roomCode = code;
+        ws.playerIndex = pidx;
+        send(ws, { type: 'rejoined', code, playerIndex: pidx, settings: room.settings });
+        room.players.forEach(p => { if (p && p !== ws) send(p, { type: 'opponent_rejoined' }); });
         break;
       }
       // All game messages relayed as-is
@@ -77,9 +99,25 @@ wss.on('connection', ws => {
   ws.on('close', () => {
     const code = ws.roomCode;
     if (!code || !rooms[code]) return;
-    rooms[code].players = rooms[code].players.filter(p => p !== ws);
-    if (rooms[code].players.length === 0) delete rooms[code];
-    else broadcast(code, { type: 'opponent_disconnected' });
+    const room = rooms[code];
+    const idx = room.players.indexOf(ws);
+    if (idx === -1) return;
+
+    // Mark slot as disconnected (keep slot open for reconnection)
+    room.players[idx] = null;
+    room.disconnected = room.disconnected || {};
+    room.disconnected[idx] = { playerIndex: ws.playerIndex, timeout: null };
+
+    // Notify opponent
+    room.players.forEach(p => { if (p) send(p, { type: 'opponent_reconnecting' }); });
+
+    // Grace period — 30 seconds to reconnect
+    room.disconnected[idx].timeout = setTimeout(() => {
+      if (!rooms[code]) return;
+      // Still disconnected after grace period — close room
+      room.players.forEach(p => { if (p) send(p, { type: 'opponent_disconnected' }); });
+      delete rooms[code];
+    }, 30000);
   });
 });
 
