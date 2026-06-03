@@ -86,6 +86,9 @@ wss.on('connection', ws => {
         break;
       }
       // All game messages relayed as-is
+      case 'ping':
+        send(ws, { type: 'pong' });
+        break;
       case 'ready':
       case 'fire':
       case 'fire_result':
