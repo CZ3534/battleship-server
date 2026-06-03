@@ -1,4 +1,5 @@
 const { WebSocketServer, WebSocket } = require('ws');
+const { randomUUID } = require('crypto');
 const http = require('http');
 
 const PORT = process.env.PORT || 8080;
@@ -45,33 +46,52 @@ wss.on('connection', ws => {
       case 'create': {
         let code;
         do { code = generateCode(); } while (rooms[code]);
-        rooms[code] = { players: [ws], settings: msg.settings || { fleet: 'standard' } };
+        const hostUid = randomUUID();
+        rooms[code] = {
+          players: [ws],
+          uids: [hostUid, null],   // uid per slot
+          settings: msg.settings || { fleet: 'standard' }
+        };
         ws.roomCode = code;
         ws.playerIndex = 0;
-        send(ws, { type: 'created', code, playerIndex: 0, settings: rooms[code].settings });
+        ws.uid = hostUid;
+        send(ws, { type: 'created', code, playerIndex: 0, uid: hostUid, settings: rooms[code].settings });
         break;
       }
       case 'join': {
         const code = (msg.code || '').toUpperCase();
         const room = rooms[code];
         if (!room) { send(ws, { type: 'error', message: 'Room not found' }); return; }
-        if (room.players.length >= 2 && room.players.every(p => p !== null)) {
-          send(ws, { type: 'error', message: 'Room is full' }); return;
-        }
+        // Room is full if both slots are occupied by active connections
+        const slot1Active = room.players[1] !== undefined && room.players[1] !== null;
+        if (slot1Active) { send(ws, { type: 'error', message: 'Room is full' }); return; }
+        const guestUid = randomUUID();
+        if (!room.uids) room.uids = [null, null];
         room.players.push(ws);
+        room.uids[1] = guestUid;
         ws.roomCode = code;
         ws.playerIndex = 1;
-        send(ws, { type: 'joined', code, playerIndex: 1, settings: room.settings });
-        send(room.players[0], { type: 'opponent_joined' });
+        ws.uid = guestUid;
+        send(ws, { type: 'joined', code, playerIndex: 1, uid: guestUid, settings: room.settings });
+        room.players.forEach(p => { if (p && p !== ws) send(p, { type: 'opponent_joined' }); });
         break;
       }
 
       case 'rejoin': {
         const code = (msg.code || '').toUpperCase();
-        const pidx = msg.playerIndex;
+        const uid = msg.uid;
         const room = rooms[code];
         if (!room) { send(ws, { type: 'error', message: 'Room expired' }); return; }
-        if (room.players[pidx] !== null) { send(ws, { type: 'error', message: 'Slot taken' }); return; }
+        // Match UID to slot
+        const pidx = room.uids ? room.uids.indexOf(uid) : -1;
+        if (pidx === -1) { send(ws, { type: 'error', message: 'Invalid session' }); return; }
+        if (room.players[pidx] !== null) {
+          // Slot still active — UID matches so ownership is proven.
+          // Force-close the old connection and let this one take over.
+          const oldWs = room.players[pidx];
+          room.players[pidx] = null;
+          try { oldWs.terminate(); } catch(e) {}
+        }
         // Clear grace period timeout
         if (room.disconnected && room.disconnected[pidx]) {
           clearTimeout(room.disconnected[pidx].timeout);
@@ -81,6 +101,7 @@ wss.on('connection', ws => {
         room.players[pidx] = ws;
         ws.roomCode = code;
         ws.playerIndex = pidx;
+        ws.uid = uid;
         send(ws, { type: 'rejoined', code, playerIndex: pidx, settings: room.settings });
         room.players.forEach(p => { if (p && p !== ws) send(p, { type: 'opponent_rejoined' }); });
         break;
