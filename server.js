@@ -67,7 +67,8 @@ wss.on('connection', ws => {
             shipHealth: [{}, {}],
             turn: 0,
             shots: [],
-          }
+          },
+          treasure: null  // set when treasure mode starts
         };
         ws.roomCode = code;
         ws.playerIndex = 0;
@@ -140,6 +141,11 @@ wss.on('connection', ws => {
       case 'fire': {
         const room = rooms[ws.roomCode];
         if (!room) return;
+        // Validate it's actually this player's turn
+        if (room.state.turn !== ws.playerIndex) {
+          send(ws, { type: 'turn_correction', yourTurn: room.state.turn === ws.playerIndex });
+          return;
+        }
         relay(ws, ws.roomCode, { ...msg, from: ws.playerIndex });
         break;
       }
@@ -172,6 +178,96 @@ wss.on('connection', ws => {
       case 'reveal_ships': {
         // Winner sends their ship placements so loser can see the full map
         relay(ws, ws.roomCode, { ...msg, from: ws.playerIndex });
+        break;
+      }
+
+      case 'treasure_ready': {
+        const room = rooms[ws.roomCode];
+        if (!room) return;
+        if (!room.treasureReady) room.treasureReady = [];
+        if (!room.treasureReady.includes(ws.playerIndex)) {
+          room.treasureReady.push(ws.playerIndex);
+        }
+        if (room.treasureReady.length === 2) {
+          // Both ready — place 3 treasures randomly
+          const positions = [];
+          while (positions.length < 3) {
+            const idx = Math.floor(Math.random() * 100);
+            if (!positions.includes(idx)) positions.push(idx);
+          }
+          const treasures = positions.map(idx => [Math.floor(idx/10), idx%10]);
+          room.treasure = {
+            positions: treasures,
+            grid: Array(100).fill(null), // null=undig, 'miss', 'found'
+            scores: [0, 0],
+            turn: 0, // playerIndex whose turn it is
+            found: 0,
+            digs: 0,
+          };
+          room.treasureReady = [];
+          room.state.phase = 'treasure';
+          // Send start to both players (don't send positions — they're hidden)
+          room.players.forEach((p, i) => {
+            send(p, { type: 'treasure_start', turn: 0, scores: [0, 0] });
+          });
+        }
+        break;
+      }
+
+      case 'treasure_dig': {
+        const room = rooms[ws.roomCode];
+        if (!room || !room.treasure) return;
+        const tr = room.treasure;
+        // Validate turn
+        if (tr.turn !== ws.playerIndex) {
+          send(ws, { type: 'turn_correction', yourTurn: false });
+          return;
+        }
+        const { row, col } = msg;
+        const idx = row * 10 + col;
+        if (tr.grid[idx]) return; // already dug
+        tr.digs++;
+        // Check if treasure
+        const hit = tr.positions.some(([r, c]) => r === row && c === col);
+        let treasure_id = null;
+        if (hit) {
+          tr.grid[idx] = 'found';
+          tr.scores[ws.playerIndex]++;
+          tr.found++;
+          treasure_id = tr.found;
+        } else {
+          tr.grid[idx] = 'miss';
+        }
+        // Chebyshev distance to nearest UNFOUND treasure
+        const unfound = tr.positions.filter(([r,c]) => tr.grid[r*10+c] !== 'found');
+        let minDist = Infinity;
+        unfound.forEach(([r,c]) => {
+          const d = Math.max(Math.abs(r-row), Math.abs(c-col));
+          if (d < minDist) minDist = d;
+        });
+        const hint = minDist === 0 ? 'found'
+          : minDist <= 1 ? 'warmest'
+          : minDist <= 3 ? 'warmer'
+          : minDist <= 5 ? 'warm'
+          : 'cold';
+        // Turn always flips
+        tr.turn = 1 - ws.playerIndex;
+        // Check win: first to 2
+        const game_over = tr.scores[0] >= 2 || tr.scores[1] >= 2;
+        const winner = game_over ? (tr.scores[0] >= 2 ? 0 : 1) : null;
+        if (game_over) room.state.phase = 'over';
+        const result = {
+          type: 'treasure_dig_result',
+          row, col, hit, hint, treasure_id,
+          by: ws.playerIndex,
+          next_turn: tr.turn,
+          scores: [...tr.scores],
+          game_over,
+          winner,
+          treasures: game_over ? tr.positions : undefined, // reveal all on game over
+        };
+        // Broadcast to both players
+        room.players.forEach(p => send(p, result));
         break;
       }
 
