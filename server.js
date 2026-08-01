@@ -189,13 +189,27 @@ wss.on('connection', ws => {
           room.treasureReady.push(ws.playerIndex);
         }
         if (room.treasureReady.length === 2) {
-          // Both ready — place 3 treasures randomly
-          const positions = [];
-          while (positions.length < 3) {
-            const idx = Math.floor(Math.random() * 100);
-            if (!positions.includes(idx)) positions.push(idx);
+          // Both ready — place 3 treasures with minimum Chebyshev distance 4-6 between each
+          const chebyshev = (r1,c1,r2,c2) => Math.max(Math.abs(r1-r2), Math.abs(c1-c2));
+          const treasures = [];
+          let attempts = 0;
+          while (treasures.length < 3 && attempts < 10000) {
+            attempts++;
+            const r = Math.floor(Math.random() * 10);
+            const c = Math.floor(Math.random() * 10);
+            const minDist = 4 + Math.floor(Math.random() * 3); // 4, 5, or 6
+            const tooClose = treasures.some(([tr, tc]) => chebyshev(r, c, tr, tc) < minDist);
+            if (!tooClose) treasures.push([r, c]);
           }
-          const treasures = positions.map(idx => [Math.floor(idx/10), idx%10]);
+          // Fallback: if can't place with random min dist, use fixed minimum of 4
+          if (treasures.length < 3) {
+            treasures.length = 0;
+            while (treasures.length < 3) {
+              const r = Math.floor(Math.random() * 10);
+              const c = Math.floor(Math.random() * 10);
+              if (!treasures.some(([tr, tc]) => chebyshev(r, c, tr, tc) < 4)) treasures.push([r, c]);
+            }
+          }
           room.treasure = {
             positions: treasures,
             grid: Array(100).fill(null), // null=undig, 'miss', 'found'
@@ -246,8 +260,7 @@ wss.on('connection', ws => {
           if (d < minDist) minDist = d;
         });
         const hint = minDist === 0 ? 'found'
-          : minDist <= 1 ? 'warmest'
-          : minDist <= 3 ? 'warmer'
+          : minDist <= 2 ? 'warmer'
           : minDist <= 5 ? 'warm'
           : 'cold';
         // Turn always flips
