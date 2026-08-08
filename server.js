@@ -142,6 +142,7 @@ wss.on('connection', ws => {
           ];
           room.state.turn = 0; // host always goes first
           room.state.shots = [];
+          console.log(`[READY] Both players ready — state reset: turn=${room.state.turn} phase=${room.state.phase}`);
         }
         relay(ws, ws.roomCode, { ...msg, from: pidx });
         break;
@@ -151,7 +152,9 @@ wss.on('connection', ws => {
         const room = rooms[ws.roomCode];
         if (!room) return;
         // Validate it's actually this player's turn
+        console.log(`[FIRE] player=${ws.playerIndex} state.turn=${room.state.turn} phase=${room.state.phase}`);
         if (room.state.turn !== ws.playerIndex) {
+          console.log(`[FIRE] REJECTED — turn_correction sent`);
           send(ws, { type: 'turn_correction', yourTurn: room.state.turn === ws.playerIndex });
           return;
         }
