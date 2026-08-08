@@ -127,13 +127,22 @@ wss.on('connection', ws => {
       }
 
       case 'ready': {
-        // Store placement data on server
         const room = rooms[ws.roomCode];
         if (!room) return;
         const pidx = ws.playerIndex;
         if (msg.placedShips) room.state.placements[pidx] = msg.placedShips;
         if (msg.myBoard) room.state.boards[pidx] = msg.myBoard;
         if (msg.shipHealth) room.state.shipHealth[pidx] = msg.shipHealth;
+        // If both players have now submitted placements, reset game state for new game
+        if (room.state.placements[0] && room.state.placements[1]) {
+          room.state.phase = 'placement';
+          room.state.boards = [
+            room.state.boards[0] || Array(100).fill(null),
+            room.state.boards[1] || Array(100).fill(null),
+          ];
+          room.state.turn = 0; // host always goes first
+          room.state.shots = [];
+        }
         relay(ws, ws.roomCode, { ...msg, from: pidx });
         break;
       }
@@ -184,11 +193,13 @@ wss.on('connection', ws => {
       case 'treasure_ready': {
         const room = rooms[ws.roomCode];
         if (!room) return;
+        // Reset treasure state on each new round (handles rematch)
         if (!room.treasureReady) room.treasureReady = [];
         if (!room.treasureReady.includes(ws.playerIndex)) {
           room.treasureReady.push(ws.playerIndex);
         }
         if (room.treasureReady.length === 2) {
+          room.treasure = null; // clear previous game
           // Both ready — place 3 treasures with minimum Chebyshev distance 4-6 between each
           const chebyshev = (r1,c1,r2,c2) => Math.max(Math.abs(r1-r2), Math.abs(c1-c2));
           const treasures = [];
@@ -289,9 +300,24 @@ wss.on('connection', ws => {
         break;
 
       case 'rematch_request':
-      case 'rematch_accept':
         relay(ws, ws.roomCode, { ...msg, from: ws.playerIndex });
         break;
+      case 'rematch_accept': {
+        const room = rooms[ws.roomCode];
+        if (room) {
+          // Reset battleship state
+          room.state.placements = [null, null];
+          room.state.shipHealth = [{}, {}];
+          room.state.shots = [];
+          room.state.turn = 0;
+          room.state.phase = 'placement';
+          // Reset treasure state
+          room.treasure = null;
+          room.treasureReady = [];
+        }
+        relay(ws, ws.roomCode, { ...msg, from: ws.playerIndex });
+        break;
+      }
 
       default:
         // Forward unknown message types (state_sync etc)
