@@ -107,6 +107,36 @@ wss.on('connection', ws => {
         break;
       }
       // All game messages relayed as-is
+      case 'radar_ping': {
+        const room = rooms[ws.roomCode];
+        if (!room) return;
+        // Validate it's this player's turn
+        if (room.state.turn !== ws.playerIndex) {
+          send(ws, { type: 'turn_correction', yourTurn: false });
+          return;
+        }
+        const { row, col } = msg;
+        const defenderIdx = 1 - ws.playerIndex;
+        const defenderBoard = room.state.boards[defenderIdx];
+        // Build 3x3 area clipped to board edges
+        let found = false;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = row + dr, nc = col + dc;
+            if (nr < 0 || nr > 9 || nc < 0 || nc > 9) continue;
+            const cell = defenderBoard[nr * 10 + nc];
+            if (cell === 'ship') { found = true; break; }
+          }
+          if (found) break;
+        }
+        // Radar consumes turn
+        room.state.turn = defenderIdx;
+        send(ws, { type: 'radar_result', found });
+        // Notify defender their turn started (same as a miss)
+        send(room.players[defenderIdx], { type: 'opponent_turn' });
+        break;
+      }
+
       case 'ping':
         send(ws, { type: 'pong' });
         break;
