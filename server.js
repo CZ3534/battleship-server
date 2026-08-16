@@ -119,6 +119,7 @@ wss.on('connection', ws => {
           if (row < 0 || row > 9 || col < 0 || col > 9) return;
           const defenderIdx = 1 - ws.playerIndex;
           const defenderBoard = room.state.boards && room.state.boards[defenderIdx];
+          console.log('[RADAR] attacker='+ws.playerIndex+' defender='+defenderIdx+' boardNull='+(defenderBoard===null||defenderBoard===undefined)+' found=?');
           if (!defenderBoard) {
             // Board not stored yet (placement not received) — just consume turn
             room.state.turn = defenderIdx;
@@ -135,10 +136,11 @@ wss.on('connection', ws => {
             }
           }
           room.state.turn = defenderIdx;
+          console.log('[RADAR] result found='+found);
           send(ws, { type: 'radar_result', found });
           if (room.players[defenderIdx]) send(room.players[defenderIdx], { type: 'opponent_turn' });
         } catch(e) {
-          console.error('[radar_ping error]', e);
+          console.error('[radar_ping error]', e.message, e.stack);
         }
         break;
       }
