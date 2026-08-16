@@ -22,6 +22,20 @@ function send(ws, msg) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
+function ensureState(room) {
+  if (!room.state) {
+    room.state = {
+      phase: 'placement',
+      placements: [null, null],
+      boards: [Array(100).fill(null), Array(100).fill(null)],
+      shipHealth: [{}, {}],
+      turn: 0,
+      shots: [],
+    };
+  }
+  return room.state;
+}
+
 function relay(sender, roomCode, msg) {
   const room = rooms[roomCode];
   if (!room) return;
@@ -111,15 +125,15 @@ wss.on('connection', ws => {
         try {
           const room = rooms[ws.roomCode];
           if (!room) return;
-          if (room.state.turn !== ws.playerIndex) {
+          const rState = ensureState(room);
+          if (rState.turn !== ws.playerIndex) {
             send(ws, { type: 'turn_correction', yourTurn: false });
             return;
           }
           const { row, col } = msg;
           if (row < 0 || row > 9 || col < 0 || col > 9) return;
           const defenderIdx = 1 - ws.playerIndex;
-          const defenderBoard = room.state.boards && room.state.boards[defenderIdx];
-          console.log('[RADAR] attacker='+ws.playerIndex+' defender='+defenderIdx+' boardNull='+(defenderBoard===null||defenderBoard===undefined)+' found=?');
+          const defenderBoard = rState.boards && rState.boards[defenderIdx];
           if (!defenderBoard) {
             // Board not stored yet (placement not received) — just consume turn
             room.state.turn = defenderIdx;
@@ -135,12 +149,11 @@ wss.on('connection', ws => {
               if (defenderBoard[nr * 10 + nc] === 'ship') found = true;
             }
           }
-          room.state.turn = defenderIdx;
-          console.log('[RADAR] result found='+found);
+          rState.turn = defenderIdx;
           send(ws, { type: 'radar_result', found });
           if (room.players[defenderIdx]) send(room.players[defenderIdx], { type: 'opponent_turn' });
         } catch(e) {
-          console.error('[radar_ping error]', e.message, e.stack);
+          console.error('[radar_ping error]', e.message);
         }
         break;
       }
